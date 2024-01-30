@@ -5,7 +5,7 @@ import sys
 pygame.init()
 
 # Set up the window
-window_size = (1500, 1000)
+window_size = (750, 750)
 window = pygame.display.set_mode(window_size)
 pygame.display.set_caption("Map Builder")
 
@@ -14,14 +14,16 @@ original_map_image = pygame.image.load("map.png")
 map_image = original_map_image.copy()
 map_rect = map_image.get_rect()
 
-zoom = 1.0
-zoom_step = 0.5
-offset = [0, 0]
+
 
 click_locations = []  # List to store click locations
-circle_radius = 5  # Base radius of circles at 1x zoom
+CIRCLE_RADIUS = 5  # Base radius of circles at 1x zoom
 
-# Function to calculate Bezier curve points
+# Visual Continuity Granularity
+CURVE_GRAN = 1200
+
+#* ------------- Bezier Curve / Math Functions ---------------
+
 def cubic_bezier(t, p0, p1, p2, p3):
     u = 1 - t
     tt = t*t
@@ -36,7 +38,7 @@ def cubic_bezier(t, p0, p1, p2, p3):
 
     return p
 
-#* At a given t value, I'll get the Derivative of the point, which acts as the "Normal" that I'm trying to use for the road
+# At a given t value, I'll get the Derivative of the point, which acts as the "Normal" that I'm trying to use for the road
 
 def cubic_bezier_derivative(t, p0, p1, p2, p3):
     u = 1 - t
@@ -44,31 +46,16 @@ def cubic_bezier_derivative(t, p0, p1, p2, p3):
                   3 * u**2 * (p1[1] - p0[1]) + 6 * u * t * (p2[1] - p1[1]) + 3 * t**2 * (p3[1] - p2[1]))
     return derivative
 
+#* ---------------------------------------------------------------------
 
-# Visual Continuity Granularity
-CURVE_GRAN = 1200
+#* ------------- Map Exporting Functions (and Algorithms) ---------------
 
-def average_neighborhood_height(x, y, heightmap, neighborhood_size):
-    total_brightness = 0
-    count = 0
-
-    for dx in range(-neighborhood_size, neighborhood_size + 1):
-        for dy in range(-neighborhood_size, neighborhood_size + 1):
-            nx, ny = x + dx, y + dy
-            if 0 <= nx < heightmap.get_width() and 0 <= ny < heightmap.get_height():
-                pixel_color = heightmap.get_at((nx, ny))
-                brightness = (pixel_color.r + pixel_color.g + pixel_color.b) / 3
-                total_brightness += brightness
-                count += 1
-
-    return total_brightness / count if count > 0 else 0
-
-# Function to draw a cubic Bezier curve with scaling
-def draw_bezier_curve(window, points, zoom, offset, color=(0, 0, 255), heightmap=None, neighborhood_size=30):
-    scaled_points = [(int(p[0] * zoom + offset[0]), int(p[1] * zoom + offset[1])) for p in points]
+def export_draw_bezier_curve(window, points, color=(0, 0, 255), heightmap=None, curve_granularity=CURVE_GRAN, neighborhood_size=30):
+    scaled_points = [( int(p[0]), int(p[1]) ) for p in points]
     
-    for t in range(CURVE_GRAN+1):
-        t /= CURVE_GRAN
+
+    for t in range(curve_granularity+1):
+        t /= curve_granularity
         p = cubic_bezier(t, *scaled_points)
         derivative = cubic_bezier_derivative(t, *scaled_points)
         
@@ -95,6 +82,84 @@ def draw_bezier_curve(window, points, zoom, offset, color=(0, 0, 255), heightmap
         normal_end_opposite = (int(p[0] - normal.x), int(p[1] - normal.y))
         pygame.draw.line(window, inner_line_color, normal_start, normal_end_opposite)
 
+Export_Map = pygame.Surface((map_image.get_width(), map_image.get_height()))
+
+def export_map_image():
+
+    Export_Map.blit(map_image, (0,0))
+
+    for i in range(0, len(click_locations) - 3, 3):
+        curve_points = [click_locations[i], click_locations[i+1], click_locations[i+2], click_locations[i+3]]
+        export_draw_bezier_curve(Export_Map, curve_points, (0,0,255), map_image, 30)
+
+    pygame.image.save(Export_Map, 'exported_map.png')
+    return 0
+
+def average_neighborhood_height(x, y, heightmap, neighborhood_size):
+    total_brightness = 0
+    count = 0
+
+    for dx in range(-neighborhood_size, neighborhood_size + 1):
+        for dy in range(-neighborhood_size, neighborhood_size + 1):
+            nx, ny = x + dx, y + dy
+            if 0 <= nx < heightmap.get_width() and 0 <= ny < heightmap.get_height():
+                pixel_color = heightmap.get_at((nx, ny))
+                brightness = (pixel_color.r + pixel_color.g + pixel_color.b) / 3
+                total_brightness += brightness
+                count += 1
+
+    return total_brightness / count if count > 0 else 0
+
+#* ---------------------------------------------------------------------
+
+
+# Function to draw a cubic Bezier curve with scaling
+def draw_bezier_curve(window, points, zoom, offset, color=(0, 0, 255), heightmap=None, neighborhood_size=30):
+    scaled_points = [(int(p[0] * zoom + offset[0]), int(p[1] * zoom + offset[1])) for p in points]
+    
+    for t in range(CURVE_GRAN+1):
+        t /= CURVE_GRAN
+        p = cubic_bezier(t, *scaled_points)
+        derivative = cubic_bezier_derivative(t, *scaled_points)
+        
+        tangent = pygame.math.Vector2(derivative).normalize()
+        UNIT_Normal = pygame.math.Vector2(-tangent.y, tangent.x)
+
+        normal_length = 15
+        border_length = 10
+
+        normal = UNIT_Normal * normal_length
+        normal_border = UNIT_Normal * (normal_length + border_length)
+
+        if heightmap:
+            averaged_brightness = average_neighborhood_height(int(p[0]), int(p[1]), heightmap, neighborhood_size)
+
+            int_col = int(averaged_brightness)
+            outer_line_color = pygame.Color(int_col, int_col, int_col)
+            inner_line_color = outer_line_color
+        else:
+            outer_line_color = (255, 0, 0)  
+            inner_line_color = (0, 255, 0)
+
+        pygame.draw.circle(window, color, (int(p[0]), int(p[1])), 1)
+
+        normal_start = (int(p[0]), int(p[1]))
+        
+        # Red Normal (Outer Normal)
+        outer_normal_end = (int(p[0] + normal.x), int(p[1] + normal.y))
+        pygame.draw.line(window, outer_line_color, normal_start, outer_normal_end)
+
+        # Green Normal (Inner Normal) 
+        inner_normal_end = (int(p[0] - normal.x), int(p[1] - normal.y))
+        pygame.draw.line(window, inner_line_color, normal_start, inner_normal_end)
+
+        # Draw Borders (In Purple)
+
+        outer_border_end = (int(p[0] + normal_border.x), int(p[1] + normal_border.y))
+        pygame.draw.line(window, (130,0,255), outer_normal_end, outer_border_end)
+
+        inner_border_end = (int(p[0] - normal_border.x), int(p[1] - normal_border.y))
+        pygame.draw.line(window, (130,0,255), inner_normal_end, inner_border_end)
 
 
 def get_pixel_coordinates(click_x, click_y, offset, zoom):
@@ -118,22 +183,31 @@ def save_full_map(filename="full_map.png"):
 def save_current_view(window, filename="saved_map.png"):
     pygame.image.save(window, filename)
 
-# Function to handle zooming
-def zoom_image(scale_factor):
-    global map_image, map_rect, zoom, original_map_image
-    zoom += scale_factor
-    zoom = max(0.1, zoom)  # Prevent zoom from going negative
-    width = int(map_rect.width * zoom)
-    height = int(map_rect.height * zoom)
-    map_image = pygame.transform.scale(original_map_image, (width, height))
-    map_rect = map_image.get_rect(center=map_rect.center)
 
+#* -------------- Pan & Zoom Functionality --------------
+
+zoom = 1.0
+zoom_step = 0.5
+offset = [0, 0]
 
 # Function to handle panning
 def pan_image(x, y):
     global offset
     offset[0] += x
     offset[1] += y
+
+# Function to handle zooming
+def zoom_image():
+    global map_image, map_rect, zoom, original_map_image
+    
+    #! Band-aid to fix, but for now IDRC
+    if(zoom < 1.5):
+        zoom += zoom_step
+
+        width = int(map_rect.width * zoom)
+        height = int(map_rect.height * zoom)
+        map_image = pygame.transform.scale(original_map_image, (width, height))
+        map_rect = map_image.get_rect(center=map_rect.center)
 
 
 # Initial flags for movement
@@ -152,7 +226,7 @@ while running:
                 print(f"Clicked pixel coordinates: ({pixel_x}, {pixel_y})")
         elif event.type == pygame.KEYDOWN:
             if event.key == pygame.K_UP:  # Zoom in
-                zoom_image(zoom_step)
+                zoom_image()
             elif event.key == pygame.K_DOWN:  # Reset zoom and recenter
                 zoom = 1.0
                 offset = [0, 0]
@@ -162,7 +236,7 @@ while running:
             elif event.key == pygame.K_z: # Destroy Latest Control Point
                 click_locations.pop()
             elif event.key == pygame.K_p: # Save Map
-                save_current_view(window)
+                export_map_image()
             elif event.key == pygame.K_a:  # Pan left
                 move_left = True
             elif event.key == pygame.K_d:  # Pan right
@@ -201,13 +275,13 @@ while running:
         # Adjust click location for current zoom and offset
         circle_x = int(loc[0] * zoom + offset[0])
         circle_y = int(loc[1] * zoom + offset[1])
-        scaled_circle_radius = int(circle_radius * zoom)  # Scale the circle size
+        scaled_circle_radius = int(CIRCLE_RADIUS * zoom)  
 
         pygame.draw.circle(window, (255, 255, 0), (circle_x, circle_y), scaled_circle_radius)
     
     for i in range(0, len(click_locations) - 3, 3):
         curve_points = [click_locations[i], click_locations[i+1], click_locations[i+2], click_locations[i+3]]
-        draw_bezier_curve(window, curve_points, zoom, offset, (0,0,255), map_image)
+        draw_bezier_curve(window, curve_points, zoom, offset, (0,0,255), None)
 
     pygame.display.flip()
 
