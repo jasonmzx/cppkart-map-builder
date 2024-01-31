@@ -1,11 +1,12 @@
 import pygame
+from pygame.locals import *
 import sys
 
 # Initialize Pygame
 pygame.init()
 
 # Set up the window
-window_size = (750, 750)
+window_size = (1500, 1000)
 window = pygame.display.set_mode(window_size)
 pygame.display.set_caption("Map Builder")
 
@@ -46,6 +47,16 @@ def cubic_bezier_derivative(t, p0, p1, p2, p3):
                   3 * u**2 * (p1[1] - p0[1]) + 6 * u * t * (p2[1] - p1[1]) + 3 * t**2 * (p3[1] - p2[1]))
     return derivative
 
+def cubic_bezier_second_derivative(t, p0, p1, p2, p3):
+    # Convert tuples to lists for element-wise operations
+    p0, p1, p2, p3 = list(p0), list(p1), list(p2), list(p3)
+
+    # Calculate the second derivative components
+    second_derivative_x = 6 * (1 - t) * (p2[0] - 2 * p1[0] + p0[0]) + 6 * t * (p3[0] - 2 * p2[0] + p1[0])
+    second_derivative_y = 6 * (1 - t) * (p2[1] - 2 * p1[1] + p0[1]) + 6 * t * (p3[1] - 2 * p2[1] + p1[1])
+
+    return (second_derivative_x, second_derivative_y)
+
 #* ---------------------------------------------------------------------
 
 #* ------------- Map Exporting Functions (and Algorithms) ---------------
@@ -53,34 +64,53 @@ def cubic_bezier_derivative(t, p0, p1, p2, p3):
 def export_draw_bezier_curve(window, points, color=(0, 0, 255), heightmap=None, curve_granularity=CURVE_GRAN, neighborhood_size=30):
     scaled_points = [( int(p[0]), int(p[1]) ) for p in points]
     
-
     for t in range(curve_granularity+1):
         t /= curve_granularity
         p = cubic_bezier(t, *scaled_points)
         derivative = cubic_bezier_derivative(t, *scaled_points)
         
         tangent = pygame.math.Vector2(derivative).normalize()
-        normal = pygame.math.Vector2(-tangent.y, tangent.x)
+        UNIT_Normal = pygame.math.Vector2(-tangent.y, tangent.x)
+
         normal_length = 15
-        normal = normal * normal_length
+        border_length = 10
+
+        normal = UNIT_Normal * normal_length
+        normal_border = UNIT_Normal * (normal_length + border_length)
 
         if heightmap:
             averaged_brightness = average_neighborhood_height(int(p[0]), int(p[1]), heightmap, neighborhood_size)
 
             int_col = int(averaged_brightness)
-            outer_line_color = pygame.Color(int_col, int_col, int_col)
-            inner_line_color = outer_line_color
+            AVG_Road_color = pygame.Color(int_col, int_col, int_col)
+
         else:
-            outer_line_color = (255, 0, 0)  
-            inner_line_color = (0, 255, 0)
+            AVG_Road_color=  (255,0,0)
 
-        pygame.draw.circle(window, color, (int(p[0]), int(p[1])), 1)
-        normal_start = (int(p[0]), int(p[1]))
-        normal_end = (int(p[0] + normal.x), int(p[1] + normal.y))
-        pygame.draw.line(window, outer_line_color, normal_start, normal_end)
+        #pygame.draw.circle(window, color, (int(p[0]), int(p[1])), 1)
+        
+        normal_start = (int(p[0]), int(p[1])) #* Used in both Inner & Outer Normal Draws
+        
+        # Red Normal (Outer Normal)
+        outer_normal_end = (int(p[0] + normal.x), int(p[1] + normal.y))
+        pygame.draw.line(window, AVG_Road_color, normal_start, outer_normal_end)
 
-        normal_end_opposite = (int(p[0] - normal.x), int(p[1] - normal.y))
-        pygame.draw.line(window, inner_line_color, normal_start, normal_end_opposite)
+        # Green Normal (Inner Normal) 
+        inner_normal_end = (int(p[0] - normal.x), int(p[1] - normal.y))
+        pygame.draw.line(window, AVG_Road_color, normal_start, inner_normal_end)
+
+        map_color = (255, 255, 255)  # Replace with the actual map color at the border point
+        #* Road Borders
+
+        outer_border_end = (int(p[0] + normal_border.x), int(p[1] + normal_border.y))
+        map_color_outer = heightmap.get_at(outer_border_end)
+
+        draw_gradient_line(window, outer_normal_end, outer_border_end, AVG_Road_color, map_color_outer)
+
+        inner_border_end = (int(p[0] - normal_border.x), int(p[1] - normal_border.y))
+        map_color_inner = heightmap.get_at(inner_border_end)
+        
+        draw_gradient_line(window, inner_normal_end, inner_border_end, AVG_Road_color, map_color_inner)
 
 Export_Map = pygame.Surface((map_image.get_width(), map_image.get_height()))
 
@@ -90,7 +120,8 @@ def export_map_image():
 
     for i in range(0, len(click_locations) - 3, 3):
         curve_points = [click_locations[i], click_locations[i+1], click_locations[i+2], click_locations[i+3]]
-        export_draw_bezier_curve(Export_Map, curve_points, (0,0,255), map_image, 30)
+        export_draw_bezier_curve(Export_Map, curve_points, (0,0,255), map_image, 5000)
+        print("POINT LOC: "+str(i)+ " COMPLETE...")
 
     pygame.image.save(Export_Map, 'exported_map.png')
     return 0
@@ -113,14 +144,38 @@ def average_neighborhood_height(x, y, heightmap, neighborhood_size):
 #* ---------------------------------------------------------------------
 
 
+def lerp_color(color1, color2, t):
+    """Linearly interpolate between two colors."""
+    return [int(a + (b - a) * t) for a, b in zip(color1, color2)]
+
+def draw_gradient_line(surface, start_pos, end_pos, start_color, end_color, width=1):
+    """Draw a line with a linear color gradient."""
+    x1, y1 = start_pos
+    x2, y2 = end_pos
+    dx, dy = x2 - x1, y2 - y1
+    distance = max(abs(dx), abs(dy))
+    for i in range(distance):
+        t = i / distance
+        color = lerp_color(start_color, end_color, t)
+        x = int(x1 + dx * t)
+        y = int(y1 + dy * t)
+        pygame.draw.line(surface, color, (x, y), (x, y), width)
+
+#* ------------------------
+
 # Function to draw a cubic Bezier curve with scaling
 def draw_bezier_curve(window, points, zoom, offset, color=(0, 0, 255), heightmap=None, neighborhood_size=30):
     scaled_points = [(int(p[0] * zoom + offset[0]), int(p[1] * zoom + offset[1])) for p in points]
     
     for t in range(CURVE_GRAN+1):
+
+        # *scaled_points isn't a PTR ! LOL, it's an unpacking directive, *scaled_points = [ (x1,y1) , (x2,y2) , ... , (xn, yn) ]
+
         t /= CURVE_GRAN
+
         p = cubic_bezier(t, *scaled_points)
         derivative = cubic_bezier_derivative(t, *scaled_points)
+        second_derivative = cubic_bezier_second_derivative(t, *scaled_points)
         
         tangent = pygame.math.Vector2(derivative).normalize()
         UNIT_Normal = pygame.math.Vector2(-tangent.y, tangent.x)
@@ -128,13 +183,19 @@ def draw_bezier_curve(window, points, zoom, offset, color=(0, 0, 255), heightmap
         normal_length = 15
         border_length = 10
 
+        second_derivative_length = 100  # Length for second derivative line
+
         normal = UNIT_Normal * normal_length
         normal_border = UNIT_Normal * (normal_length + border_length)
+        
+        second_derivative_line = pygame.math.Vector2(second_derivative).normalize() * second_derivative_length
 
         if heightmap:
             averaged_brightness = average_neighborhood_height(int(p[0]), int(p[1]), heightmap, neighborhood_size)
 
             int_col = int(averaged_brightness)
+            
+            #* --- Setting Inner & Outer to AVG. Brightness ---
             outer_line_color = pygame.Color(int_col, int_col, int_col)
             inner_line_color = outer_line_color
         else:
@@ -153,13 +214,51 @@ def draw_bezier_curve(window, points, zoom, offset, color=(0, 0, 255), heightmap
         inner_normal_end = (int(p[0] - normal.x), int(p[1] - normal.y))
         pygame.draw.line(window, inner_line_color, normal_start, inner_normal_end)
 
-        # Draw Borders (In Purple)
+        #* [--------------------- Road Borders  ---------------------]
 
         outer_border_end = (int(p[0] + normal_border.x), int(p[1] + normal_border.y))
         pygame.draw.line(window, (130,0,255), outer_normal_end, outer_border_end)
 
         inner_border_end = (int(p[0] - normal_border.x), int(p[1] - normal_border.y))
         pygame.draw.line(window, (130,0,255), inner_normal_end, inner_border_end)
+
+         # Draw Second Derivative Line (In Orange)
+        second_derivative_end = (int(p[0] + second_derivative_line.x), int(p[1] + second_derivative_line.y))
+        #pygame.draw.line(window, (255, 165, 0), normal_start, second_derivative_end)
+
+
+def draw_second_derivative_curves(window, points, zoom, offset, color=(0, 0, 255), heightmap=None, neighborhood_size=30):
+    scaled_points = [(int(p[0] * zoom + offset[0]), int(p[1] * zoom + offset[1])) for p in points]
+    
+    for t in range(CURVE_GRAN+1):
+
+        # *scaled_points isn't a PTR ! LOL, it's an unpacking directive, *scaled_points = [ (x1,y1) , (x2,y2) , ... , (xn, yn) ]
+
+        t /= CURVE_GRAN
+
+        p = cubic_bezier(t, *scaled_points)
+        second_derivative = cubic_bezier_second_derivative(t, *scaled_points)
+        
+        second_derivative_length = 100  # Length for second derivative line
+
+        second_derivative_line = pygame.math.Vector2(second_derivative).normalize() * second_derivative_length
+
+        # if heightmap:
+        #     averaged_brightness = average_neighborhood_height(int(p[0]), int(p[1]), heightmap, neighborhood_size)
+
+        #     int_col = int(averaged_brightness)
+        #     outer_line_color = pygame.Color(int_col, int_col, int_col)
+        #     inner_line_color = outer_line_color
+        # else:
+        #     outer_line_color = (255, 0, 0)  
+        #     inner_line_color = (0, 255, 0)
+
+        normal_start = (int(p[0]), int(p[1]))
+        
+         # Draw Second Derivative Line (In Orange)
+        second_derivative_end = (int(p[0] + second_derivative_line.x), int(p[1] + second_derivative_line.y))
+        pygame.draw.line(window, (255, 165, 0), normal_start, second_derivative_end)
+
 
 
 def get_pixel_coordinates(click_x, click_y, offset, zoom):
@@ -279,9 +378,15 @@ while running:
 
         pygame.draw.circle(window, (255, 255, 0), (circle_x, circle_y), scaled_circle_radius)
     
-    for i in range(0, len(click_locations) - 3, 3):
+    CLICK_LOC_LEN = len(click_locations)
+
+    for i in range(0, CLICK_LOC_LEN - 3, 3):
         curve_points = [click_locations[i], click_locations[i+1], click_locations[i+2], click_locations[i+3]]
         draw_bezier_curve(window, curve_points, zoom, offset, (0,0,255), None)
+
+    for j in range(0, CLICK_LOC_LEN - 3, 3):
+        curve_points = [click_locations[j], click_locations[j+1], click_locations[j+2], click_locations[j+3]]
+        #draw_second_derivative_curves(window, curve_points, zoom, offset, (0,0,255), None)
 
     pygame.display.flip()
 
